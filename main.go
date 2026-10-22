@@ -165,7 +165,8 @@ func makeDiscordRequest(msg DiscordWebhook) bool {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Post(config.WebhookURL+"?wait=true", "application/json", bytes.NewBuffer(jsonBody))
 	if err != nil {
-		log.Println("Failed to make Discord webhook request: " + err.Error())
+		// Client errors may include the webhook URL, which contains its secret.
+		log.Println("Failed to make Discord webhook request")
 		return false
 	}
 
