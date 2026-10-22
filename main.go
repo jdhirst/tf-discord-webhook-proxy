@@ -8,8 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-
-	"github.com/tkanos/gonfig"
+	"time"
 )
 
 // global config
@@ -32,24 +31,37 @@ func main() {
 		}
 	} else {
 		// don't pull from env, look for config.json
-		err := gonfig.GetConf("config.json", &config)
+		configFile, err := os.Open("config.json")
 		if err != nil {
+			log.Fatal("Failed to parse config: " + err.Error())
+		}
+		defer configFile.Close()
+		if err := json.NewDecoder(configFile).Decode(&config); err != nil {
 			log.Fatal("Failed to parse config: " + err.Error())
 		}
 	}
 
-	log.Printf("Using webhook URL: %s\n", config.WebhookURL)
+	if config.WebhookURL == "" {
+		log.Fatal("Discord webhook URL is not configured")
+	}
 
 	http.HandleFunc("/webhook", handleIncomingWebhook)
 
 	log.Printf("Listening on port %d\n", config.Port)
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", config.Port), nil))
+	server := &http.Server{
+		Addr:              fmt.Sprintf(":%d", config.Port),
+		Handler:           nil,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	log.Fatal(server.ListenAndServe())
 }
 
 func handleIncomingWebhook(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	buf, err := ioutil.ReadAll(r.Body)
 	if err != nil {
 		log.Println("Failed to get incoming webhook body: " + err.Error())
+		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
@@ -57,6 +69,7 @@ func handleIncomingWebhook(w http.ResponseWriter, r *http.Request) {
 	err = json.Unmarshal(buf, &webhook)
 	if err != nil {
 		log.Println("Failed to unmarshal Terraform webhook: " + err.Error())
+		http.Error(w, "invalid webhook payload", http.StatusBadRequest)
 		return
 	}
 
@@ -149,13 +162,17 @@ func makeDiscordRequest(msg DiscordWebhook) bool {
 		return false
 	}
 
-	resp, err := http.Post(config.WebhookURL+"?wait=true", "application/json", bytes.NewBuffer(jsonBody))
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(config.WebhookURL+"?wait=true", "application/json", bytes.NewBuffer(jsonBody))
 	if err != nil {
 		log.Println("Failed to make Discord webhook request: " + err.Error())
 		return false
 	}
 
 	defer resp.Body.Close()
-
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Printf("Discord webhook returned HTTP %d", resp.StatusCode)
+		return false
+	}
 	return true
 }
